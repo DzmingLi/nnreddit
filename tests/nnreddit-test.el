@@ -4,25 +4,37 @@
 (require 'cl-lib)
 (require 'nnreddit)
 
-(ert-deftest nnreddit-gnus-search-finds-cached-posts-and-comments ()
-  (let* ((group '(:name "subreddit.emacs" :kind "subreddit"
-                  :entries ((:number 4 :title "Org workflows" :author "Ada"
-                             :body "Outlining")
-                            (:number 9 :title "Org workflows" :author "Bob"
-                             :body "Nested reply"))))
-         (store (make-nnreddit--db :groups (list group)))
-         (engine (make-instance 'gnus-search-nnreddit)))
-    (cl-letf (((symbol-function 'gnus-server-to-method)
-               (lambda (_) '(nnreddit "reddit")))
-              ((symbol-function 'nnreddit--select) (lambda (_) store)))
-      (should (equal (gnus-search-run-search
-                      engine "nnreddit:reddit" '((query . "nested reply"))
-                      '("nnreddit:subreddit.emacs"))
-                     [["nnreddit:subreddit.emacs" 9 100]]))
-      (should (equal (gnus-search-run-search
-                      engine "nnreddit:reddit" '((query . "missing"))
-                      '("nnreddit:subreddit.emacs"))
-                     [])))))
+(ert-deftest nnreddit-gnus-search-imports-subreddit-history ()
+  (let* ((directory (make-temp-file "nnreddit-search-" t))
+         (store (make-nnreddit--db
+                 :file (expand-file-name "cache.json" directory)
+                 :groups (list (list :name "subreddit.emacs" :kind "subreddit"
+                                     :next 1 :entries nil))))
+         (engine (make-instance 'gnus-search-nnreddit))
+         (payload (nnreddit-test--listing
+                   (list (list :kind "t3" :data
+                               (list :name "t3_abc" :title "Historic Org post"
+                                     :author "Ada" :selftext "Body"
+                                     :created_utc 1000 :subreddit "emacs"
+                                     :permalink "/r/emacs/comments/abc/historic/")))))
+         requested)
+    (unwind-protect
+        (cl-letf (((symbol-function 'gnus-server-to-method)
+                   (lambda (_) '(nnreddit "reddit")))
+                  ((symbol-function 'nnreddit--select) (lambda (_) store))
+                  ((symbol-function 'nnreddit--request)
+                   (lambda (_method path fields)
+                     (setq requested (list path fields)) payload)))
+          (should (equal (gnus-search-run-search
+                          engine "nnreddit:reddit" '((query . "historic"))
+                          '("nnreddit:subreddit.emacs"))
+                         [["nnreddit:search" 1 100]]))
+          (should (equal "/r/emacs/search.json" (car requested)))
+          (should (equal "historic" (cadr (assoc "q" (cadr requested)))))
+          (should (equal "Historic Org post"
+                         (plist-get (nnreddit--entry (nnreddit--group store "search") 1)
+                                    :title))))
+      (delete-directory directory t))))
 
 (defun nnreddit-test--listing (children)
   "Make a Reddit listing with CHILDREN."

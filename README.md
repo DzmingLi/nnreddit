@@ -65,9 +65,10 @@ Normal Gnus article navigation still works without it.
 ## Gnus search
 
 Gnus search is available with `G g` in the Group buffer. The search engine
-finds posts and comments already fetched into nnreddit groups. A search does
-not fetch Reddit history or add old posts to a subscribed inbox. Queries are
-case-insensitive words matched against cached title, author, and body text.
+calls Reddit's native subreddit search for the selected subreddit groups.
+Matching submissions are kept in an internal search group, so historical
+results do not enter a subscribed inbox. Reddit's public API does not provide
+comment-history search through this endpoint.
 
 ## Development
 

@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026
 ;; SPDX-License-Identifier: GPL-3.0-or-later
-;; Version: 0.1.1
+;; Version: 0.1.2
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: news, comm
 
@@ -569,7 +569,8 @@ The localhost page may fail to load; copy its complete URL from the browser."
   (or (nnreddit--group store name)
       (let ((kind (cond ((string-match-p "\\`subreddit\\.[A-Za-z0-9_]+\\'" name) "subreddit")
                         ((string-match-p "\\`post\\.[a-z0-9]+\\'" name) "post")
-                        ((equal name "notifications") "notifications"))))
+                        ((equal name "notifications") "notifications")
+                        ((equal name "search") "search"))))
         (unless kind (error "Use subreddit.NAME, post.ID or notifications"))
         (let ((group (list :name name :kind kind :next 1 :entries nil)))
           (push group (nnreddit--db-groups store))
@@ -716,8 +717,9 @@ TARGETS is a list of notification comment fullnames.  Return new numbers."
     (with-current-buffer nntp-server-buffer
       (erase-buffer)
       (dolist (group (nnreddit--db-groups store))
-        (insert (format "%s %d 1 y\n" (plist-get group :name)
-                        (1- (plist-get group :next)))))))
+        (unless (equal (plist-get group :kind) "search")
+          (insert (format "%s %d 1 y\n" (plist-get group :name)
+                          (1- (plist-get group :next))))))))
   t)
 (deffoo nnreddit-retrieve-groups (_groups &optional server)
   (nnreddit-request-list server) 'active)
@@ -726,7 +728,8 @@ TARGETS is a list of notification comment fullnames.  Return new numbers."
     (with-current-buffer nntp-server-buffer
       (erase-buffer)
       (dolist (group (nnreddit--db-groups store))
-        (insert (plist-get group :name) "\tReddit " (plist-get group :kind) "\n"))))
+        (unless (equal (plist-get group :kind) "search")
+          (insert (plist-get group :name) "\tReddit " (plist-get group :kind) "\n")))))
   t)
 (deffoo nnreddit-request-create-group (group &optional server _args)
   (nnreddit--ensure-group (nnreddit--select server) group) t)
@@ -787,7 +790,8 @@ TARGETS is a list of notification comment fullnames.  Return new numbers."
        (dolist (thread (plist-get (nnreddit--operation (list :action "notifications")) :threads))
          (let ((root (concat "t3_" (plist-get thread :post_id))))
            (nnreddit--import store data (plist-get thread :articles)
-                             root (plist-get thread :targets))))))
+                             root (plist-get thread :targets)))))
+      ("search" nil))
     t))
 
 (deffoo nnreddit-request-scan (&optional group server)
@@ -795,9 +799,10 @@ TARGETS is a list of notification comment fullnames.  Return new numbers."
     (dolist (name (if group (list group)
                     (mapcar (lambda (item) (plist-get item :name))
                             (nnreddit--db-groups store))))
-      (condition-case problem
-          (nnreddit-update name server)
-        (error (nnheader-report 'nnreddit "%s" (error-message-string problem))))))
+      (unless (equal name "search")
+        (condition-case problem
+            (nnreddit-update name server)
+          (error (nnheader-report 'nnreddit "%s" (error-message-string problem)))))))
   t)
 
 (defun nnreddit--subscribe (name)
@@ -964,37 +969,57 @@ TARGETS is a list of notification comment fullnames.  Return new numbers."
 ;; post appear as a new unread inbox item.
 (defclass gnus-search-nnreddit (gnus-search-engine)
   ((raw-queries-p :initform t))
-  :documentation "Search cached Reddit articles through Gnus.")
+  :documentation "Search Reddit submissions through the site API and Gnus.")
 
-(defun nnreddit--search-matches-p (entry terms)
-  "Return non-nil when ENTRY contains every word in TERMS."
-  (let ((text (downcase
-               (mapconcat #'identity
-                          (delq nil (mapcar (lambda (key) (plist-get entry key))
-                                             '(:title :author :body))) " "))))
-    (cl-every (lambda (term)
-                (string-search (downcase term) text))
-              terms)))
+(defun nnreddit--search-remote (store method subreddit query limit)
+  "Search SUBREDDIT for QUERY and import hits into STORE's search group.
+METHOD is the native Gnus server method.  LIMIT bounds the API response."
+  (let* ((payload (nnreddit--request
+                   'get (format "/r/%s/search.json" subreddit)
+                   `(("q" ,query) ("restrict_sr" "on") ("type" "link")
+                     ("sort" "relevance") ("limit" ,(number-to-string
+                                                       (min 100 (max 1 limit)))))))
+         (records (mapcar #'nnreddit--post-record (nnreddit--listing payload)))
+         (full (gnus-group-prefixed-name "search" method)))
+    (dolist (record records)
+      (unless (equal (downcase (or (plist-get record :subreddit) ""))
+                     (downcase subreddit))
+        (error "Reddit search returned another subreddit")))
+    (when records
+      (let ((search (nnreddit--ensure-group store "search")))
+        (when (and (boundp 'gnus-group-buffer) (buffer-live-p gnus-group-buffer))
+          (with-current-buffer gnus-group-buffer
+            (unless (gnus-get-info full)
+              (gnus-group-make-group "search" method)
+              (gnus-group-change-level (gnus-group-entry full) 9))))
+        (nnreddit--import store search records)
+        (mapcar (lambda (record)
+                  (vector full (plist-get (nnreddit--entry search
+                                                          (plist-get record :id)) :number)
+                          100))
+                records)))))
 
 (cl-defmethod gnus-search-run-search ((engine gnus-search-nnreddit)
                                       server query groups)
-  "Search cached Reddit articles in GROUPS on SERVER for QUERY."
+  "Search Reddit submissions in GROUPS on SERVER for QUERY."
   (let* ((method (gnus-server-to-method server))
          (store (nnreddit--select (cadr method)))
          (needle (gnus-search-make-query-string engine query))
-         (terms (split-string (or needle "") "[[:space:]]+" t))
          (targets (or groups
                       (mapcar (lambda (group)
                                 (gnus-group-full-name (plist-get group :name) server))
                               (nnreddit--db-groups store))))
          (limit (alist-get 'limit query))
          results)
-    (unless terms (user-error "Enter a Reddit search query"))
+    (unless (and (stringp needle) (not (string-empty-p (string-trim needle))))
+      (user-error "Enter a Reddit search query"))
     (dolist (full targets)
       (when-let* ((group (nnreddit--group store (gnus-group-short-name full))))
-        (dolist (entry (plist-get group :entries))
-          (when (nnreddit--search-matches-p entry terms)
-            (push (vector full (plist-get entry :number) 100) results)))))
+        (when (equal (plist-get group :kind) "subreddit")
+          (dolist (hit (nnreddit--search-remote
+                        store method (substring (plist-get group :name) 10)
+                        needle (if (and (integerp limit) (> limit 0)) limit 100)))
+            (push hit results)))))
     (setq results (nreverse results))
     (vconcat (if (and (integerp limit) (>= limit 0))
                  (seq-take results limit)
