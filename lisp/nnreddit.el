@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026
 ;; SPDX-License-Identifier: GPL-3.0-or-later
-;; Version: 0.1.2
+;; Version: 0.1.3
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: news, comm
 
@@ -987,11 +987,11 @@ METHOD is the native Gnus server method.  LIMIT bounds the API response."
         (error "Reddit search returned another subreddit")))
     (when records
       (let ((search (nnreddit--ensure-group store "search")))
-        (when (and (boundp 'gnus-group-buffer) (buffer-live-p gnus-group-buffer))
+        (when (and (boundp 'gnus-group-buffer) (get-buffer gnus-group-buffer))
           (with-current-buffer gnus-group-buffer
             (unless (gnus-get-info full)
               (gnus-group-make-group "search" method)
-              (gnus-group-change-level (gnus-group-entry full) 9))))
+              (gnus-group-change-level (gnus-group-entry full) 7))))
         (nnreddit--import store search records)
         (mapcar (lambda (record)
                   (vector full (plist-get (nnreddit--entry search
