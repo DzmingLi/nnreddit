@@ -62,6 +62,13 @@ Inside a Reddit summary, `G` refreshes the group. `RET` fetches the complete
 reply tree and opens `gnus-thread-reader` if that separate package is installed.
 Normal Gnus article navigation still works without it.
 
+## Gnus search
+
+Gnus search is available with `G g` in the Group buffer. The search engine
+finds posts and comments already fetched into nnreddit groups. A search does
+not fetch Reddit history or add old posts to a subscribed inbox. Queries are
+case-insensitive words matched against cached title, author, and body text.
+
 ## Development
 
 ```sh

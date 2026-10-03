@@ -4,6 +4,26 @@
 (require 'cl-lib)
 (require 'nnreddit)
 
+(ert-deftest nnreddit-gnus-search-finds-cached-posts-and-comments ()
+  (let* ((group '(:name "subreddit.emacs" :kind "subreddit"
+                  :entries ((:number 4 :title "Org workflows" :author "Ada"
+                             :body "Outlining")
+                            (:number 9 :title "Org workflows" :author "Bob"
+                             :body "Nested reply"))))
+         (store (make-nnreddit--db :groups (list group)))
+         (engine (make-instance 'gnus-search-nnreddit)))
+    (cl-letf (((symbol-function 'gnus-server-to-method)
+               (lambda (_) '(nnreddit "reddit")))
+              ((symbol-function 'nnreddit--select) (lambda (_) store)))
+      (should (equal (gnus-search-run-search
+                      engine "nnreddit:reddit" '((query . "nested reply"))
+                      '("nnreddit:subreddit.emacs"))
+                     [["nnreddit:subreddit.emacs" 9 100]]))
+      (should (equal (gnus-search-run-search
+                      engine "nnreddit:reddit" '((query . "missing"))
+                      '("nnreddit:subreddit.emacs"))
+                     [])))))
+
 (defun nnreddit-test--listing (children)
   "Make a Reddit listing with CHILDREN."
   (list :kind "Listing" :data (list :children children)))

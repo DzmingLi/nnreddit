@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026
 ;; SPDX-License-Identifier: GPL-3.0-or-later
-;; Version: 0.1.0
+;; Version: 0.1.1
 ;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: news, comm
 
@@ -20,6 +20,7 @@
 (require 'gnus-sum)
 (require 'gnus-start)
 (require 'gnus-art)
+(require 'gnus-search)
 (require 'nnoo)
 (require 'nnheader)
 (require 'message)
@@ -30,6 +31,7 @@
 (require 'url-parse)
 (require 'url-util)
 (require 'subr-x)
+(require 'seq)
 (declare-function gnus-thread-reader-open "gnus-thread-reader" ())
 
 (defgroup nnreddit nil "Reddit subscriptions in Gnus." :group 'gnus)
@@ -956,6 +958,49 @@ TARGETS is a list of notification comment fullnames.  Return new numbers."
           (error "Reply to a known Reddit article or compose in a subreddit group"))
         (nnreddit--send store data parent title (nnreddit--post-body)))
     (error (nnheader-report 'nnreddit "%s" (error-message-string problem)))))
+
+;; Search only articles already assigned stable Gnus numbers.  Importing a
+;; remote search result into a subscribed group would otherwise make an old
+;; post appear as a new unread inbox item.
+(defclass gnus-search-nnreddit (gnus-search-engine)
+  ((raw-queries-p :initform t))
+  :documentation "Search cached Reddit articles through Gnus.")
+
+(defun nnreddit--search-matches-p (entry terms)
+  "Return non-nil when ENTRY contains every word in TERMS."
+  (let ((text (downcase
+               (mapconcat #'identity
+                          (delq nil (mapcar (lambda (key) (plist-get entry key))
+                                             '(:title :author :body))) " "))))
+    (cl-every (lambda (term)
+                (string-search (downcase term) text))
+              terms)))
+
+(cl-defmethod gnus-search-run-search ((engine gnus-search-nnreddit)
+                                      server query groups)
+  "Search cached Reddit articles in GROUPS on SERVER for QUERY."
+  (let* ((method (gnus-server-to-method server))
+         (store (nnreddit--select (cadr method)))
+         (needle (gnus-search-make-query-string engine query))
+         (terms (split-string (or needle "") "[[:space:]]+" t))
+         (targets (or groups
+                      (mapcar (lambda (group)
+                                (gnus-group-full-name (plist-get group :name) server))
+                              (nnreddit--db-groups store))))
+         (limit (alist-get 'limit query))
+         results)
+    (unless terms (user-error "Enter a Reddit search query"))
+    (dolist (full targets)
+      (when-let* ((group (nnreddit--group store (gnus-group-short-name full))))
+        (dolist (entry (plist-get group :entries))
+          (when (nnreddit--search-matches-p entry terms)
+            (push (vector full (plist-get entry :number) 100) results)))))
+    (setq results (nreverse results))
+    (vconcat (if (and (integerp limit) (>= limit 0))
+                 (seq-take results limit)
+               results))))
+
+(add-to-list 'gnus-search-default-engines '(nnreddit . gnus-search-nnreddit))
 
 (gnus-declare-backend "nnreddit" 'post)
 (nnoo-define-skeleton nnreddit)
